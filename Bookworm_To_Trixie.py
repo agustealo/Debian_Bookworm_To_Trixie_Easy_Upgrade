@@ -2,7 +2,7 @@
 
 #==============================================================================
 # Debian Bookworm to Trixie Upgrade Script
-# Version: 2.0
+# Version: 0.2.0
 # Description: Bulletproof upgrade script with multiple upgrade modes
 # Requirements: Root privileges, stable internet, 5-10GB free space
 #==============================================================================
