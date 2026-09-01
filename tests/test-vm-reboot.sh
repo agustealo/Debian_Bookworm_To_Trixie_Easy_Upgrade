@@ -79,7 +79,7 @@ qemu-system-x86_64 \
     -drive "file=$SEED_IMAGE,if=virtio,format=raw" \
     -device virtio-net-pci,netdev=net0 \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
-    -nographic \
+    -display none \
     -serial "file:$SERIAL_LOG" \
     -daemonize \
     -pidfile "$QEMU_PID_FILE"
@@ -87,6 +87,14 @@ qemu-system-x86_64 \
 SSH_ARGS=(
     -i "$SSH_KEY"
     -p "$SSH_PORT"
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+)
+SCP_ARGS=(
+    -i "$SSH_KEY"
+    -P "$SSH_PORT"
     -o BatchMode=yes
     -o ConnectTimeout=5
     -o StrictHostKeyChecking=no
@@ -113,7 +121,7 @@ ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'while [ ! -e /var/tmp/cloud-init-ready ]; do 
 printf '[vm] proving initial Bookworm identity\n'
 ssh "${SSH_ARGS[@]}" ci@127.0.0.1 '. /etc/os-release; test "$ID" = debian; test "$VERSION_ID" = 12; test "$VERSION_CODENAME" = bookworm'
 
-scp "${SSH_ARGS[@]}" "$ROOT_DIR/debian-bookworm-to-trixie.sh" ci@127.0.0.1:/tmp/debian-bookworm-to-trixie.sh
+scp "${SCP_ARGS[@]}" "$ROOT_DIR/debian-bookworm-to-trixie.sh" ci@127.0.0.1:/tmp/debian-bookworm-to-trixie.sh
 
 printf '[vm] executing production upgrader\n'
 ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo chmod +x /tmp/debian-bookworm-to-trixie.sh && sudo /tmp/debian-bookworm-to-trixie.sh --non-interactive --yes --no-reboot --backup-dir /var/backups/trixie-vm'
