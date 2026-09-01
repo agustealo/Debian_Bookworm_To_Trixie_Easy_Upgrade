@@ -22,7 +22,7 @@ jobs:
           bash -n tests/test-container-upgrade.sh
           bash -n tests/test-rollback.sh
       - name: ShellCheck
-        run: shellcheck debian-bookworm-to-trixie.sh tests/*.sh
+        run: shellcheck -x debian-bookworm-to-trixie.sh tests/*.sh
       - name: Source migration fixtures
         run: bash tests/test-source-migration.sh
       - name: Help surface smoke test
