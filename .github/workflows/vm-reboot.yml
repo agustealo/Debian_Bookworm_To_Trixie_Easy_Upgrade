@@ -1,0 +1,34 @@
+name: VM Reboot Proof
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qemu-bookworm-to-trixie-reboot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and cloud image tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils openssh-client curl
+      - name: Shell syntax and lint
+        run: |
+          bash -n tests/test-vm-reboot.sh
+          shellcheck tests/test-vm-reboot.sh
+      - name: Upgrade and reboot disposable Debian VM
+        env:
+          KEEP_VM_ARTIFACTS: "1"
+        run: bash tests/test-vm-reboot.sh
+      - name: Upload serial log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trixie-vm-serial-log
+          path: /tmp/**/serial.log
+          if-no-files-found: ignore
