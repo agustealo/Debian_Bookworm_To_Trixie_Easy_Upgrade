@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-# shellcheck source=../debian-bookworm-to-trixie.sh
+# shellcheck disable=SC1091
 source "$ROOT_DIR/debian-bookworm-to-trixie.sh"
 
 ((EUID == 0)) || {
@@ -13,10 +13,10 @@ source "$ROOT_DIR/debian-bookworm-to-trixie.sh"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 BACKUP_DIR="$TMP/backup"
-mkdir -p "$BACKUP_DIR/etc-apt"
+mkdir -p "$BACKUP_DIR/apt"
 
-cp -a /etc/apt/sources.list "$BACKUP_DIR/etc-apt/" 2>/dev/null || true
-cp -a /etc/apt/sources.list.d "$BACKUP_DIR/etc-apt/" 2>/dev/null || true
+cp -a /etc/apt/sources.list "$BACKUP_DIR/apt/" 2>/dev/null || true
+cp -a /etc/apt/sources.list.d "$BACKUP_DIR/apt/" 2>/dev/null || true
 
 snapshot_sources() {
   local out=$1
