@@ -24,11 +24,12 @@ jobs:
       - name: Upgrade and reboot disposable Debian VM
         env:
           KEEP_VM_ARTIFACTS: "1"
+          WORK_DIR: ${{ github.workspace }}/.vm-artifacts
         run: bash tests/test-vm-reboot.sh
       - name: Upload serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: trixie-vm-serial-log
-          path: /tmp/**/serial.log
+          path: .vm-artifacts/serial.log
           if-no-files-found: ignore
