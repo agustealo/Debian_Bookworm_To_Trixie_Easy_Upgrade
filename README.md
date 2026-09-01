@@ -68,16 +68,29 @@ Useful options:
 
 ## Development and smoke tests
 
-The repository includes a GitHub Actions quality gate covering Bash syntax, ShellCheck, fixture tests for classic and deb822 source migration, mixed-source fail-closed behavior, and the command-line help surface.
+GitHub Actions now separates fast correctness checks from destructive integration proof:
 
-Run locally:
+- **smoke** validates Bash syntax, ShellCheck, source migration fixtures, mixed-source rejection, and the CLI surface;
+- **rollback** launches a disposable Debian 12 container, deliberately corrupts APT source state, invokes the production rollback function, and requires byte-for-byte restoration;
+- **bookworm-to-trixie-integration** launches a clean `debian:12` container and executes the real upgrader against live Debian repositories. The job only passes after `/etc/os-release` identifies Debian 13 Trixie, `dpkg --audit` is clean, `apt-get check` succeeds, no active Bookworm repository remains, and the upgrade log exists.
+
+Run the fast suite locally:
 
 ```bash
 bash -n debian-bookworm-to-trixie.sh
-bash -n tests/test-source-migration.sh
-shellcheck debian-bookworm-to-trixie.sh tests/test-source-migration.sh
+bash -n tests/*.sh
+shellcheck debian-bookworm-to-trixie.sh tests/*.sh
 bash tests/test-source-migration.sh
 ```
+
+Run the destructive disposable tests when Docker is available:
+
+```bash
+docker run --rm --volume "$PWD:/workspace:ro" debian:12 bash /workspace/tests/test-rollback.sh
+bash tests/test-container-upgrade.sh
+```
+
+The container upgrade is meaningful package-transition evidence, but it is not a substitute for VM or bare-metal testing of bootloader, initramfs, kernel boot, hardware drivers, encrypted storage, networking, or service restart behavior.
 
 ## Scope
 
