@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+WORK_DIR=${WORK_DIR:-"$(mktemp -d)"}
+VM_IMAGE=${VM_IMAGE:-"$WORK_DIR/bookworm.qcow2"}
+SEED_IMAGE=${SEED_IMAGE:-"$WORK_DIR/seed.img"}
+SSH_KEY=${SSH_KEY:-"$WORK_DIR/id_ed25519"}
+SERIAL_LOG=${SERIAL_LOG:-"$WORK_DIR/serial.log"}
+QEMU_PID_FILE=${QEMU_PID_FILE:-"$WORK_DIR/qemu.pid"}
+SSH_PORT=${SSH_PORT:-2222}
+BOOKWORM_IMAGE_URL=${BOOKWORM_IMAGE_URL:-https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2}
+KEEP_VM_ARTIFACTS=${KEEP_VM_ARTIFACTS:-0}
+
+cleanup() {
+    if [[ -f "$QEMU_PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$QEMU_PID_FILE" 2>/dev/null || true)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    fi
+    if [[ $KEEP_VM_ARTIFACTS != 1 ]]; then
+        rm -rf "$WORK_DIR"
+    else
+        printf '[vm] artifacts retained at %s\n' "$WORK_DIR"
+    fi
+}
+trap cleanup EXIT
+
+require() {
+    command -v "$1" >/dev/null 2>&1 || {
+        printf 'missing required command: %s\n' "$1" >&2
+        exit 1
+    }
+}
+
+for command_name in curl qemu-img qemu-system-x86_64 cloud-localds ssh ssh-keygen scp; do
+    require "$command_name"
+done
+
+mkdir -p "$WORK_DIR"
+ssh-keygen -q -t ed25519 -N '' -f "$SSH_KEY"
+
+printf '[vm] downloading Debian 12 generic cloud image\n'
+curl --fail --location --retry 3 --output "$VM_IMAGE" "$BOOKWORM_IMAGE_URL"
+qemu-img resize "$VM_IMAGE" 12G >/dev/null
+
+cat > "$WORK_DIR/meta-data" <<'EOF'
+instance-id: trixie-safety-3
+local-hostname: trixie-safety-3
+EOF
+
+cat > "$WORK_DIR/user-data" <<EOF
+#cloud-config
+users:
+  - name: ci
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - $(cat "$SSH_KEY.pub")
+ssh_pwauth: false
+package_update: false
+runcmd:
+  - [ sh, -c, 'touch /var/tmp/cloud-init-ready' ]
+EOF
+
+cloud-localds "$SEED_IMAGE" "$WORK_DIR/user-data" "$WORK_DIR/meta-data"
+
+printf '[vm] booting Bookworm VM under QEMU/TCG\n'
+qemu-system-x86_64 \
+    -machine accel=tcg \
+    -cpu max \
+    -smp 2 \
+    -m 3072 \
+    -drive "file=$VM_IMAGE,if=virtio,format=qcow2" \
+    -drive "file=$SEED_IMAGE,if=virtio,format=raw" \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
+    -display none \
+    -serial "file:$SERIAL_LOG" \
+    -daemonize \
+    -pidfile "$QEMU_PID_FILE"
+
+SSH_ARGS=(
+    -i "$SSH_KEY"
+    -p "$SSH_PORT"
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+)
+SCP_ARGS=(
+    -i "$SSH_KEY"
+    -P "$SSH_PORT"
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+)
+
+wait_for_ssh() {
+    local attempts=${1:-120}
+    local attempt
+    for ((attempt=1; attempt<=attempts; attempt++)); do
+        if ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'true' >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 5
+    done
+    printf '[vm] SSH did not become ready\n' >&2
+    tail -n 200 "$SERIAL_LOG" >&2 || true
+    return 1
+}
+
+wait_for_ssh 120
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'while [ ! -e /var/tmp/cloud-init-ready ]; do sleep 2; done'
+
+printf '[vm] proving initial Bookworm identity\n'
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 '. /etc/os-release; test "$ID" = debian; test "$VERSION_ID" = 12; test "$VERSION_CODENAME" = bookworm'
+
+printf '[vm] normalizing cloud mirror indirection to standard official Debian sources\n'
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo sh -c '\''cat > /etc/apt/sources.list.d/debian-ci.sources <<"EOF"
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: bookworm bookworm-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://deb.debian.org/debian-security
+Suites: bookworm-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources
+'\'''
+
+scp "${SCP_ARGS[@]}" "$ROOT_DIR/debian-bookworm-to-trixie.sh" ci@127.0.0.1:/tmp/debian-bookworm-to-trixie.sh
+
+printf '[vm] executing production upgrader\n'
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo chmod +x /tmp/debian-bookworm-to-trixie.sh && sudo /tmp/debian-bookworm-to-trixie.sh --non-interactive --yes --no-reboot --backup-dir /var/backups/trixie-vm'
+
+printf '[vm] rebooting upgraded VM\n'
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo systemctl reboot' || true
+sleep 10
+wait_for_ssh 180
+
+printf '[vm] verifying post-reboot Trixie state\n'
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 '
+set -eu
+. /etc/os-release
+test "$ID" = debian
+test "$VERSION_ID" = 13
+test "$VERSION_CODENAME" = trixie
+dpkg --audit | grep -qv .
+sudo apt-get check >/dev/null
+uname -r | grep -Eq "^6\\.12|trixie|amd64"
+test -d /var/backups/trixie-vm
+! grep -RhsE "^[[:space:]]*(deb|deb-src).*bookworm([[:space:]-]|$)" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null | grep -v disabled-by-trixie-upgrade | grep -q .
+failed=$(systemctl --failed --no-legend --plain 2>/dev/null || true)
+if [ -n "$failed" ]; then
+  printf "%s\\n" "$failed" >&2
+  exit 1
+fi
+'
+
+printf 'PASS: VM upgraded, rebooted, and verified on Debian 13 Trixie\n'
