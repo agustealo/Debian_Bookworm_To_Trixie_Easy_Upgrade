@@ -121,6 +121,23 @@ ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'while [ ! -e /var/tmp/cloud-init-ready ]; do 
 printf '[vm] proving initial Bookworm identity\n'
 ssh "${SSH_ARGS[@]}" ci@127.0.0.1 '. /etc/os-release; test "$ID" = debian; test "$VERSION_ID" = 12; test "$VERSION_CODENAME" = bookworm'
 
+printf '[vm] normalizing cloud mirror indirection to standard official Debian sources\n'
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo sh -c '\''cat > /etc/apt/sources.list.d/debian-ci.sources <<"EOF"
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: bookworm bookworm-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://deb.debian.org/debian-security
+Suites: bookworm-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources
+'\'''
+
 scp "${SCP_ARGS[@]}" "$ROOT_DIR/debian-bookworm-to-trixie.sh" ci@127.0.0.1:/tmp/debian-bookworm-to-trixie.sh
 
 printf '[vm] executing production upgrader\n'
