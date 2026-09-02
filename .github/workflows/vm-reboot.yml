@@ -10,7 +10,7 @@ permissions:
 jobs:
   qemu-bookworm-to-trixie-reboot:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - name: Install QEMU and cloud image tooling
@@ -25,7 +25,8 @@ jobs:
         env:
           KEEP_VM_ARTIFACTS: "1"
           WORK_DIR: ${{ github.workspace }}/.vm-artifacts
-        run: bash tests/test-vm-reboot.sh
+          VM_TOTAL_TIMEOUT: "4200"
+        run: timeout --signal=TERM --kill-after=120s "${VM_TOTAL_TIMEOUT}s" bash tests/test-vm-reboot.sh
       - name: Upload serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
