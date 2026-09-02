@@ -52,3 +52,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Upgrade disposable Debian 12 container to Debian 13
         run: bash tests/test-container-upgrade.sh
+
+  required-quality-gate:
+    name: Required Quality Gate
+    if: always()
+    needs: [smoke, rollback, bookworm-to-trixie-integration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all quality jobs
+        env:
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result }}
+          INTEGRATION_RESULT: ${{ needs.bookworm-to-trixie-integration.result }}
+        run: |
+          printf 'smoke=%s\nrollback=%s\nintegration=%s\n' \
+            "$SMOKE_RESULT" "$ROLLBACK_RESULT" "$INTEGRATION_RESULT"
+          [[ "$SMOKE_RESULT" == success ]]
+          [[ "$ROLLBACK_RESULT" == success ]]
+          [[ "$INTEGRATION_RESULT" == success ]]
