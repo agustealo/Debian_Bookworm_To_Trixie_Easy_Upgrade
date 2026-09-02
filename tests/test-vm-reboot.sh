@@ -127,13 +127,13 @@ ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'while [ ! -e /var/tmp/cloud-init-ready ]; do 
 printf '[vm] proving initial Bookworm identity\n'
 ssh "${SSH_ARGS[@]}" ci@127.0.0.1 '. /etc/os-release; test "$ID" = debian; test "$VERSION_ID" = 12; test "$VERSION_CODENAME" = bookworm'
 
-printf '[vm] preserving native Debian cloud mirror transport and removing blocked backports suites\n'
-ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo sh -c '\''
+cat > "$WORK_DIR/prepare-cloud-sources.sh" <<'EOF'
+#!/bin/sh
 set -eu
 source_file=/etc/apt/sources.list.d/debian.sources
 test -f "$source_file"
-grep -q "mirror+file:" "$source_file"
-awk '\''\'''\''
+grep -q 'mirror+file:' "$source_file"
+awk '
 /^Suites:/ {
     line=$1
     for (i=2; i<=NF; i++) {
@@ -145,12 +145,17 @@ awk '\''\'''\''
     next
 }
 { print }
-'\''\'''\'' "$source_file" > "$source_file.tmp"
+' "$source_file" > "$source_file.tmp"
 cat "$source_file.tmp" > "$source_file"
 rm -f "$source_file.tmp"
-grep -q "mirror+file:" "$source_file"
-! grep -Eq "(^|[[:space:]])bookworm-backports(-sloppy)?([[:space:]]|$)" "$source_file"
-'\'''
+grep -q 'mirror+file:' "$source_file"
+! grep -Eq '(^|[[:space:]])bookworm-backports(-sloppy)?([[:space:]]|$)' "$source_file"
+EOF
+chmod +x "$WORK_DIR/prepare-cloud-sources.sh"
+
+printf '[vm] preserving native Debian cloud mirror transport and removing blocked backports suites\n'
+scp "${SCP_ARGS[@]}" "$WORK_DIR/prepare-cloud-sources.sh" ci@127.0.0.1:/tmp/prepare-cloud-sources.sh
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo /bin/sh /tmp/prepare-cloud-sources.sh'
 
 scp "${SCP_ARGS[@]}" "$ROOT_DIR/debian-bookworm-to-trixie.sh" ci@127.0.0.1:/tmp/debian-bookworm-to-trixie.sh
 
