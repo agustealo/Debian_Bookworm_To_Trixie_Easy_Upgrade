@@ -419,13 +419,18 @@ restore_sources() {
 }
 
 active_bookworm_sources_remain() {
-    if grep -RhsE '^[[:space:]]*(deb|deb-src).*bookworm([[:space:]-]|$)' "$APT_ROOT/sources.list" "$APT_ROOT/sources.list.d" 2>/dev/null \
-        | grep -v disabled-by-trixie-upgrade >/dev/null; then
-        return 0
-    fi
-    if grep -RhsE '^[[:space:]]*Suites:[[:space:]].*(^|[[:space:]])bookworm([[:space:]-]|$)' "$APT_ROOT/sources.list.d" 2>/dev/null >/dev/null; then
-        return 0
-    fi
+    local file
+    while IFS= read -r file; do
+        if [[ $file == *.sources ]]; then
+            if grep -Eqi '^[[:space:]]*Suites:[[:space:]].*bookworm([[:space:]-]|$)' "$file"; then
+                return 0
+            fi
+        else
+            if grep -Eqi '^[[:space:]]*(deb|deb-src).*bookworm([[:space:]-]|$)' "$file"; then
+                return 0
+            fi
+        fi
+    done < <(list_source_files)
     return 1
 }
 
