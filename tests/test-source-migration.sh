@@ -129,4 +129,28 @@ if ( inventory_sources >/dev/null 2>&1 ); then
   fail "missing cloud mirror target should not be trusted as Debian"
 fi
 
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main
+EOF
+cat > "$tmp/apt/sources.list.d/debian.sources.bookworm-backup" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: bookworm bookworm-updates
+Components: main
+EOF
+if active_bookworm_sources_remain; then
+  fail "retained .bookworm-backup must not count as active Bookworm source"
+fi
+
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: bookworm
+Components: main
+EOF
+active_bookworm_sources_remain || fail "active Bookworm deb822 suite must be detected"
+
 printf 'PASS: source migration and ownership fixtures\n'
