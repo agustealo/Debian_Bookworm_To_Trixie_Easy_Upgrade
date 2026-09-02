@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 SOURCE_CODENAME="bookworm"
 TARGET_CODENAME="trixie"
 TARGET_VERSION_ID="13"
@@ -326,6 +326,71 @@ inventory_sources() {
     return 0
 }
 
+list_held_packages() {
+    apt-mark showhold
+}
+
+list_preference_files() {
+    local file base
+    if [[ -f "$APT_ROOT/preferences" ]]; then
+        printf '%s\n' "$APT_ROOT/preferences"
+    fi
+    [[ -d "$APT_ROOT/preferences.d" ]] || return 0
+    while IFS= read -r -d '' file; do
+        base=${file##*/}
+        [[ $base =~ ^[A-Za-z0-9_-]+(\.pref)?$ ]] || continue
+        printf '%s\n' "$file"
+    done < <(find "$APT_ROOT/preferences.d" -maxdepth 1 -type f -print0 | sort -z)
+}
+
+preference_file_has_rules() {
+    grep -Ev '^[[:space:]]*(#|$)' "$1" 2>/dev/null | grep -q .
+}
+
+active_suite_token_exists() {
+    local token=$1 file
+    while IFS= read -r file; do
+        if [[ $file == *.sources ]]; then
+            if grep -Eqi "^[[:space:]]*Suites:[[:space:]].*[[:space:]]${token}([[:space:]]|$)|^[[:space:]]*Suites:[[:space:]]*${token}([[:space:]]|$)" "$file"; then
+                return 0
+            fi
+        elif grep -Ei '^[[:space:]]*(deb|deb-src)[[:space:]]+' "$file" 2>/dev/null \
+            | grep -Eqi "[[:space:]]${token}([[:space:]]|$)"; then
+            return 0
+        fi
+    done < <(list_source_files)
+    return 1
+}
+
+check_upgrade_policy() {
+    PHASE="release upgrade policy"
+    local held preference_file
+
+    held=$(list_held_packages)
+    if [[ -n $held ]]; then
+        log_error "Held packages detected:"
+        printf '%s\n' "$held" >&2
+        die "Remove or deliberately resolve package holds before the release upgrade."
+    fi
+
+    while IFS= read -r preference_file; do
+        if preference_file_has_rules "$preference_file"; then
+            die "Active APT pinning detected in $preference_file. Disable or review pinning before upgrading."
+        fi
+    done < <(list_preference_files)
+
+    if active_suite_token_exists "${SOURCE_CODENAME}-proposed-updates"; then
+        die "${SOURCE_CODENAME}-proposed-updates is enabled. Debian recommends removing proposed-updates before the release upgrade."
+    fi
+    if active_suite_token_exists "${SOURCE_CODENAME}-backports-sloppy"; then
+        die "${SOURCE_CODENAME}-backports-sloppy has no clean upgrade path. Remove it before upgrading."
+    fi
+    if active_suite_token_exists "${SOURCE_CODENAME}-backports"; then
+        die "${SOURCE_CODENAME}-backports is enabled. Remove the entry before upgrading and re-add ${TARGET_CODENAME}-backports afterward if needed."
+    fi
+    return 0
+}
+
 rewrite_list_file() {
     awk '
 /^[[:space:]]*#/||/^[[:space:]]*$/ {print;next}
@@ -514,6 +579,7 @@ main() {
     check_package_health
     check_space
     inventory_sources
+    check_upgrade_policy
     check_network
     backup_state
 
