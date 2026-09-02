@@ -48,8 +48,8 @@ curl --fail --location --retry 3 --output "$VM_IMAGE" "$BOOKWORM_IMAGE_URL"
 qemu-img resize "$VM_IMAGE" 12G >/dev/null
 
 cat > "$WORK_DIR/meta-data" <<'EOF'
-instance-id: trixie-safety-3
-local-hostname: trixie-safety-3
+instance-id: trixie-safety-7
+local-hostname: trixie-safety-7
 EOF
 
 cat > "$WORK_DIR/user-data" <<EOF
@@ -69,10 +69,16 @@ EOF
 
 cloud-localds "$SEED_IMAGE" "$WORK_DIR/user-data" "$WORK_DIR/meta-data"
 
-printf '[vm] booting Bookworm VM under QEMU/TCG\n'
+QEMU_ACCEL=tcg
+QEMU_CPU=max
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+    QEMU_ACCEL=kvm
+    QEMU_CPU=host
+fi
+printf '[vm] booting Bookworm VM under QEMU/%s\n' "$QEMU_ACCEL"
 qemu-system-x86_64 \
-    -machine accel=tcg \
-    -cpu max \
+    -machine "accel=$QEMU_ACCEL" \
+    -cpu "$QEMU_CPU" \
     -smp 2 \
     -m 3072 \
     -drive "file=$VM_IMAGE,if=virtio,format=qcow2" \
@@ -121,22 +127,8 @@ ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'while [ ! -e /var/tmp/cloud-init-ready ]; do 
 printf '[vm] proving initial Bookworm identity\n'
 ssh "${SSH_ARGS[@]}" ci@127.0.0.1 '. /etc/os-release; test "$ID" = debian; test "$VERSION_ID" = 12; test "$VERSION_CODENAME" = bookworm'
 
-printf '[vm] normalizing cloud mirror indirection to standard official Debian sources\n'
-ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'sudo sh -c '\''cat > /etc/apt/sources.list.d/debian-ci.sources <<"EOF"
-Types: deb
-URIs: http://deb.debian.org/debian
-Suites: bookworm bookworm-updates
-Components: main
-Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-
-Types: deb
-URIs: http://deb.debian.org/debian-security
-Suites: bookworm-security
-Components: main
-Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-EOF
-rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources
-'\'''
+printf '[vm] preserving native Debian cloud mirror source configuration\n'
+ssh "${SSH_ARGS[@]}" ci@127.0.0.1 'test -f /etc/apt/sources.list.d/debian.sources; grep -q "mirror+file:" /etc/apt/sources.list.d/debian.sources'
 
 scp "${SCP_ARGS[@]}" "$ROOT_DIR/debian-bookworm-to-trixie.sh" ci@127.0.0.1:/tmp/debian-bookworm-to-trixie.sh
 
@@ -157,9 +149,11 @@ test "$VERSION_ID" = 13
 test "$VERSION_CODENAME" = trixie
 dpkg --audit | grep -qv .
 sudo apt-get check >/dev/null
-uname -r | grep -Eq "^6\\.12|trixie|amd64"
+dpkg-query -W -f="${Status}\n" linux-image-amd64 | grep -q "install ok installed"
+uname -r | grep -Eq "^[0-9]+\\.[0-9]+.*-amd64$"
 test -d /var/backups/trixie-vm
 ! grep -RhsE "^[[:space:]]*(deb|deb-src).*bookworm([[:space:]-]|$)" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null | grep -v disabled-by-trixie-upgrade | grep -q .
+! grep -RhsE "^[[:space:]]*Suites:[[:space:]].*bookworm([[:space:]-]|$)" /etc/apt/sources.list.d 2>/dev/null | grep -q .
 failed=$(systemctl --failed --no-legend --plain 2>/dev/null || true)
 if [ -n "$failed" ]; then
   printf "%s\\n" "$failed" >&2
@@ -167,4 +161,4 @@ if [ -n "$failed" ]; then
 fi
 '
 
-printf 'PASS: VM upgraded, rebooted, and verified on Debian 13 Trixie\n'
+printf 'PASS: VM upgraded native cloud sources, rebooted, and verified on Debian 13 Trixie\n'
