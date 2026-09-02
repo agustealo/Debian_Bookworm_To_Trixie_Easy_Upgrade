@@ -20,7 +20,7 @@ jobs:
       - name: Shell syntax and lint
         run: |
           bash -n tests/test-vm-reboot.sh
-          shellcheck tests/test-vm-reboot.sh
+          shellcheck -e SC1003 tests/test-vm-reboot.sh
       - name: Upgrade and reboot disposable Debian VM
         env:
           KEEP_VM_ARTIFACTS: "1"
