@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 SOURCE_CODENAME="bookworm"
 TARGET_CODENAME="trixie"
 TARGET_VERSION_ID="13"
@@ -177,12 +177,113 @@ list_source_files() {
     done < <(find "$APT_ROOT/sources.list.d" -maxdepth 1 -type f \( -name '*.list' -o -name '*.sources' \) -print0 | sort -z)
 }
 
-is_debian_source() {
-    grep -Eqi '(deb\.debian\.org|security\.debian\.org|ftp\.[^[:space:]]*\.debian\.org)' "$1"
+is_direct_debian_uri() {
+    [[ $1 =~ ^https?://(deb\.debian\.org|security\.debian\.org|ftp\.[^/[:space:]]*\.debian\.org)(/|$) ]]
+}
+
+mirror_uri_path() {
+    local path=${1#mirror+file:}
+    while [[ $path == //* ]]; do
+        path=${path#/}
+    done
+    if [[ $path == /etc/apt/* && $APT_ROOT != /etc/apt ]]; then
+        path="${APT_ROOT%/}/${path#/etc/apt/}"
+    fi
+    printf '%s\n' "$path"
+}
+
+mirror_file_is_debian() {
+    local mirror_file=$1 line uri seen=0
+    [[ -r $mirror_file ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%%#*}
+        [[ -n ${line//[[:space:]]/} ]] || continue
+        uri=${line%%[[:space:]]*}
+        is_direct_debian_uri "$uri" || return 1
+        seen=1
+    done < "$mirror_file"
+    ((seen == 1))
+}
+
+uri_is_debian() {
+    local uri=$1 mirror_file
+    if is_direct_debian_uri "$uri"; then
+        return 0
+    fi
+    if [[ $uri == mirror+file:* ]]; then
+        mirror_file=$(mirror_uri_path "$uri")
+        mirror_file_is_debian "$mirror_file"
+        return
+    fi
+    return 1
 }
 
 has_third_party_list() {
-    grep -E '^[[:space:]]*(deb|deb-src)[[:space:]]+' "$1" 2>/dev/null | grep -Ev '(deb\.debian\.org|security\.debian\.org|\.debian\.org)' >/dev/null 2>&1
+    local line uri
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ ^[[:space:]]*(deb|deb-src)[[:space:]]+ ]] || continue
+        line=${line#*deb }
+        if [[ $line == "$line" ]]; then
+            line=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*deb-src[[:space:]]+//')
+        fi
+        if [[ $line == \[*\]* ]]; then
+            line=${line#*]}
+        fi
+        read -r uri _ <<< "$line"
+        uri_is_debian "$uri" || return 0
+    done < "$1"
+    return 1
+}
+
+list_file_is_debian() {
+    local line uri seen=0
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ ^[[:space:]]*(deb|deb-src)[[:space:]]+ ]] || continue
+        line=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*(deb|deb-src)[[:space:]]+//')
+        if [[ $line == \[*\]* ]]; then
+            line=${line#*]}
+        fi
+        read -r uri _ <<< "$line"
+        if uri_is_debian "$uri"; then
+            seen=1
+        fi
+    done < "$1"
+    ((seen == 1))
+}
+
+deb822_file_kind() {
+    local file=$1 stanza uris_line uri
+    local file_debian=0 file_third_party=0 stanza_debian stanza_third_party
+    local -a uris=()
+
+    while IFS= read -r -d '' stanza; do
+        uris_line=$(printf '%s\n' "$stanza" | awk -F: 'tolower($1)=="uris" {sub(/^[^:]*:[[:space:]]*/,""); print; exit}')
+        [[ -n $uris_line ]] || continue
+        stanza_debian=0
+        stanza_third_party=0
+        IFS=' ' read -r -a uris <<< "$uris_line"
+        for uri in "${uris[@]}"; do
+            if uri_is_debian "$uri"; then
+                stanza_debian=1
+            else
+                stanza_third_party=1
+            fi
+        done
+        if ((stanza_debian == 1 && stanza_third_party == 1)); then
+            printf 'mixed\n'
+            return 0
+        fi
+        ((stanza_debian == 1)) && file_debian=1
+        ((stanza_third_party == 1)) && file_third_party=1
+    done < <(awk 'BEGIN{RS=""; ORS="\0"} {print}' "$file")
+
+    if ((file_debian == 1 && file_third_party == 1)); then
+        printf 'mixed\n'
+    elif ((file_debian == 1)); then
+        printf 'debian\n'
+    else
+        printf 'third-party\n'
+    fi
 }
 
 inventory_sources() {
@@ -192,31 +293,29 @@ inventory_sources() {
 
     DEBIAN_FILES=()
     THIRD_PARTY_FILES=()
-    local file is_debian is_third_party
+    local file kind is_debian is_third_party
 
     for file in "${SOURCE_FILES[@]}"; do
         is_debian=0
         is_third_party=0
-        if is_debian_source "$file"; then
-            is_debian=1
-        fi
-        if [[ $file == *.list ]]; then
-            if has_third_party_list "$file"; then
-                is_third_party=1
-            fi
-        elif ((is_debian == 0)); then
-            is_third_party=1
+        if [[ $file == *.sources ]]; then
+            kind=$(deb822_file_kind "$file")
+            case "$kind" in
+                debian) is_debian=1 ;;
+                third-party) is_third_party=1 ;;
+                mixed) die "Mixed official Debian and third-party stanzas in one file: $file. Split it before upgrading." ;;
+                *) die "Unable to classify deb822 source file: $file" ;;
+            esac
+        else
+            list_file_is_debian "$file" && is_debian=1
+            has_third_party_list "$file" && is_third_party=1
         fi
 
         if ((is_debian == 1 && is_third_party == 1)); then
             die "Mixed official Debian and third-party entries in one file: $file. Split it before upgrading."
         fi
-        if ((is_debian == 1)); then
-            DEBIAN_FILES+=("$file")
-        fi
-        if ((is_third_party == 1)); then
-            THIRD_PARTY_FILES+=("$file")
-        fi
+        ((is_debian == 1)) && DEBIAN_FILES+=("$file")
+        ((is_third_party == 1)) && THIRD_PARTY_FILES+=("$file")
     done
 
     ((${#DEBIAN_FILES[@]} > 0)) || die "No official Debian source found."
@@ -237,10 +336,10 @@ rewrite_list_file() {
 
 rewrite_sources_file() {
     awk '
-BEGIN{debian=0}
-/^URIs:/ {debian=($0~/(deb\.debian\.org|security\.debian\.org|\.debian\.org)/);print;next}
-debian&&/^Suites:/ {gsub(/bookworm-backports/,"trixie-backports");gsub(/bookworm-security/,"trixie-security");gsub(/bookworm-updates/,"trixie-updates");gsub(/bookworm-proposed-updates/,"trixie-proposed-updates");gsub(/bookworm/,"trixie");print;next}
-/^$/{debian=0}{print}' "$1" > "$2"
+/^Suites:/ {
+ gsub(/bookworm-backports/,"trixie-backports"); gsub(/bookworm-security/,"trixie-security"); gsub(/bookworm-updates/,"trixie-updates"); gsub(/bookworm-proposed-updates/,"trixie-proposed-updates"); gsub(/bookworm/,"trixie")
+}
+{print}' "$1" > "$2"
 }
 
 backup_state() {
@@ -319,6 +418,22 @@ restore_sources() {
     return 0
 }
 
+active_bookworm_sources_remain() {
+    local file
+    while IFS= read -r file; do
+        if [[ $file == *.sources ]]; then
+            if grep -Eqi '^[[:space:]]*Suites:[[:space:]].*bookworm([[:space:]-]|$)' "$file"; then
+                return 0
+            fi
+        else
+            if grep -Eqi '^[[:space:]]*(deb|deb-src).*bookworm([[:space:]-]|$)' "$file"; then
+                return 0
+            fi
+        fi
+    done < <(list_source_files)
+    return 1
+}
+
 validate_migrated_sources() {
     PHASE="Trixie repository validation"
     if ((DRY_RUN)); then
@@ -330,7 +445,7 @@ validate_migrated_sources() {
         apt-get update -o Acquire::Retries=2 || true
         die "Trixie repository validation failed; sources restored."
     fi
-    if grep -RhsE '^[[:space:]]*(deb|deb-src).*bookworm([[:space:]-]|$)' "$APT_ROOT/sources.list" "$APT_ROOT/sources.list.d" 2>/dev/null | grep -v disabled-by-trixie-upgrade >/dev/null; then
+    if active_bookworm_sources_remain; then
         restore_sources
         die "Active Bookworm entries remain; sources restored."
     fi

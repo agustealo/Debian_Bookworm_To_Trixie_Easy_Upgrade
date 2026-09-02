@@ -42,7 +42,7 @@ assert_contains "$tmp/trixie.sources" "Suites: trixie trixie-updates"
 assert_contains "$tmp/trixie.sources" "Suites: trixie-security"
 assert_not_contains "$tmp/trixie.sources" "Suites: bookworm"
 
-mkdir -p "$tmp/apt/sources.list.d"
+mkdir -p "$tmp/apt/sources.list.d" "$tmp/apt/mirrors"
 cp "$tmp/bookworm.list" "$tmp/apt/sources.list"
 cat > "$tmp/apt/sources.list.d/vendor.list" <<'EOF'
 deb https://packages.example.invalid/debian stable main
@@ -60,4 +60,97 @@ if ( inventory_sources >/dev/null 2>&1 ); then
   fail "mixed official and third-party .list should fail closed"
 fi
 
-printf 'PASS: source migration fixtures\n'
+rm -f "$tmp/apt/sources.list" "$tmp/apt/sources.list.d/vendor.list"
+cat > "$tmp/apt/mirrors/debian.list" <<'EOF'
+https://deb.debian.org/debian
+EOF
+cat > "$tmp/apt/mirrors/debian-security.list" <<'EOF'
+https://security.debian.org/debian-security
+EOF
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: mirror+file:/etc/apt/mirrors/debian.list
+Suites: bookworm bookworm-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: mirror+file:///etc/apt/mirrors/debian-security.list
+Suites: bookworm-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+inventory_sources
+[[ ${#DEBIAN_FILES[@]} -eq 1 ]] || fail "cloud mirror deb822 source should classify as Debian"
+[[ ${#THIRD_PARTY_FILES[@]} -eq 0 ]] || fail "cloud mirror deb822 source should not classify as third-party"
+rewrite_sources_file "$tmp/apt/sources.list.d/debian.sources" "$tmp/cloud-trixie.sources"
+assert_contains "$tmp/cloud-trixie.sources" "Suites: trixie trixie-updates"
+assert_contains "$tmp/cloud-trixie.sources" "Suites: trixie-security"
+
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: bookworm
+Components: main
+
+Types: deb
+URIs: https://packages.example.invalid/debian
+Suites: stable
+Components: main
+EOF
+if ( inventory_sources >/dev/null 2>&1 ); then
+  fail "mixed Debian/vendor deb822 file should fail closed"
+fi
+
+cat > "$tmp/apt/mirrors/debian.list" <<'EOF'
+https://deb.debian.org/debian
+https://packages.example.invalid/debian
+EOF
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: mirror+file:/etc/apt/mirrors/debian.list
+Suites: bookworm
+Components: main
+EOF
+if ( inventory_sources >/dev/null 2>&1 ); then
+  fail "mixed cloud mirror target should fail closed"
+fi
+
+cat > "$tmp/apt/mirrors/debian.list" <<'EOF'
+https://deb.debian.org/debian
+EOF
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: mirror+file:/etc/apt/mirrors/missing.list
+Suites: bookworm
+Components: main
+EOF
+if ( inventory_sources >/dev/null 2>&1 ); then
+  fail "missing cloud mirror target should not be trusted as Debian"
+fi
+
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main
+EOF
+cat > "$tmp/apt/sources.list.d/debian.sources.bookworm-backup" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: bookworm bookworm-updates
+Components: main
+EOF
+if active_bookworm_sources_remain; then
+  fail "retained .bookworm-backup must not count as active Bookworm source"
+fi
+
+cat > "$tmp/apt/sources.list.d/debian.sources" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: bookworm
+Components: main
+EOF
+active_bookworm_sources_remain || fail "active Bookworm deb822 suite must be detected"
+
+printf 'PASS: source migration and ownership fixtures\n'
